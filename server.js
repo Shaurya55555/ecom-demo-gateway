@@ -37,6 +37,7 @@ const typeDefs = gql`
     userId: ID!
     username: String!
     email: String!
+    role: String!
   }
 
   type Query {
@@ -52,7 +53,7 @@ const typeDefs = gql`
     createUser(name: String!, email: String!): User
     createProduct(name: String!, description: String!, price: Float!): Product
     createOrder(productId: ID!, userId: ID!, quantity: Int!): Order
-    register(username: String!, email: String!, password: String!): RegisterResult
+    register(username: String!, email: String!, password: String!, role: String): RegisterResult
     login(email: String!, password: String!): AuthPayload
   }
 `;
@@ -74,7 +75,10 @@ const resolvers = {
       writeDb(db);
       return user;
     },
-    createProduct: (_, { name, description, price }) => {
+    createProduct: (_, { name, description, price }, context) => {
+      if (!context.userId || !['seller', 'admin'].includes(context.role)) {
+        throw new Error('Only seller or admin accounts can list products');
+      }
       const db = readDb();
       const product = { id: newId(), name, description, price };
       db.products.push(product);
@@ -85,19 +89,26 @@ const resolvers = {
       if (!context.userId) {
         throw new Error('Missing or invalid bearer token');
       }
+      if (context.role !== 'user') {
+        throw new Error('Only buyer accounts can place orders');
+      }
       const db = readDb();
       const order = { id: newId(), productId, userId, quantity, status: 'Pending' };
       db.orders.push(order);
       writeDb(db);
       return order;
     },
-    register: async (_, { username, email, password }) => {
+    register: async (_, { username, email, password, role }) => {
+      const VALID_ROLES = ['user', 'seller', 'admin'];
+      if (role && !VALID_ROLES.includes(role)) {
+        throw new Error(`role must be one of: ${VALID_ROLES.join(', ')}`);
+      }
       const db = readDb();
       if (db.accounts?.some((a) => a.email === email)) {
         throw new Error('Email already in use');
       }
       const hashed = await bcrypt.hash(password, 10);
-      const account = { id: newId(), username, email, password: hashed };
+      const account = { id: newId(), username, email, password: hashed, role: role || 'user' };
       db.accounts = db.accounts || [];
       db.accounts.push(account);
       writeDb(db);
@@ -110,11 +121,17 @@ const resolvers = {
         throw new Error('Invalid credentials');
       }
       const token = jwt.sign(
-        { userId: account.id, username: account.username },
+        { userId: account.id, username: account.username, role: account.role || 'user' },
         JWT_SECRET,
         { expiresIn: '1h' }
       );
-      return { token, userId: account.id, username: account.username, email: account.email };
+      return {
+        token,
+        userId: account.id,
+        username: account.username,
+        email: account.email,
+        role: account.role || 'user',
+      };
     },
   },
 };
@@ -129,7 +146,7 @@ const server = new ApolloServer({
     if (!token) return {};
     try {
       const payload = jwt.verify(token, JWT_SECRET);
-      return { userId: payload.userId, username: payload.username };
+      return { userId: payload.userId, username: payload.username, role: payload.role };
     } catch {
       return {};
     }
