@@ -9,9 +9,9 @@ const SEED = {
     { id: 'u1', name: 'Demo Shopper', email: 'demo@ecom.dev' },
   ],
   products: [
-    { id: 'p1', name: 'Wireless Mouse', description: 'Ergonomic 2.4GHz wireless mouse', price: 19.99 },
-    { id: 'p2', name: 'Mechanical Keyboard', description: 'Hot-swappable 75% mechanical keyboard', price: 89.5 },
-    { id: 'p3', name: 'USB-C Hub', description: '7-in-1 USB-C hub with HDMI and PD passthrough', price: 34.0 },
+    { id: 'p1', name: 'Wireless Mouse', description: 'Ergonomic 2.4GHz wireless mouse', price: 19.99, sellerId: null },
+    { id: 'p2', name: 'Mechanical Keyboard', description: 'Hot-swappable 75% mechanical keyboard', price: 89.5, sellerId: null },
+    { id: 'p3', name: 'USB-C Hub', description: '7-in-1 USB-C hub with HDMI and PD passthrough', price: 34.0, sellerId: null },
   ],
   orders: [],
   accounts: [],

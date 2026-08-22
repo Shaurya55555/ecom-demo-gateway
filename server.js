@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const { readDb, writeDb, newId } = require('./db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'ecom-demo-insecure-dev-secret';
+const PUBLIC_ROLES = ['user', 'seller'];
 
 const typeDefs = gql`
   type User {
@@ -17,6 +18,7 @@ const typeDefs = gql`
     name: String!
     description: String!
     price: Float!
+    sellerId: ID
   }
 
   type Order {
@@ -25,6 +27,14 @@ const typeDefs = gql`
     userId: ID!
     quantity: Int!
     status: String!
+  }
+
+  type Account {
+    id: ID!
+    username: String!
+    email: String!
+    role: String!
+    active: Boolean!
   }
 
   type RegisterResult {
@@ -47,16 +57,31 @@ const typeDefs = gql`
     getProduct(id: ID!): Product
     getOrders: [Order]
     getOrder(id: ID!): Order
+    getSellerOrders: [Order]
+    getAccounts: [Account]
   }
 
   type Mutation {
     createUser(name: String!, email: String!): User
     createProduct(name: String!, description: String!, price: Float!): Product
     createOrder(productId: ID!, userId: ID!, quantity: Int!): Order
+    respondToOrder(id: ID!, accept: Boolean!): Order
     register(username: String!, email: String!, password: String!, role: String): RegisterResult
     login(email: String!, password: String!): AuthPayload
+    setAccountActive(userId: ID!, active: Boolean!): Account
   }
 `;
+
+function requireRole(context, roles) {
+  if (!context.userId) throw new Error('Missing or invalid bearer token');
+  if (!roles.includes(context.role)) {
+    throw new Error(`Requires role: ${roles.join(' or ')}`);
+  }
+}
+
+function accountView(a) {
+  return { id: a.id, username: a.username, email: a.email, role: a.role || 'user', active: a.active !== false };
+}
 
 const resolvers = {
   Query: {
@@ -66,6 +91,18 @@ const resolvers = {
     getProduct: (_, { id }) => readDb().products.find((p) => p.id === id),
     getOrders: () => readDb().orders,
     getOrder: (_, { id }) => readDb().orders.find((o) => o.id === id),
+    getSellerOrders: (_, __, context) => {
+      requireRole(context, ['seller']);
+      const db = readDb();
+      const myProductIds = new Set(
+        db.products.filter((p) => p.sellerId === context.userId).map((p) => p.id)
+      );
+      return db.orders.filter((o) => myProductIds.has(o.productId));
+    },
+    getAccounts: (_, __, context) => {
+      requireRole(context, ['admin']);
+      return readDb().accounts.map(accountView);
+    },
   },
   Mutation: {
     createUser: (_, { name, email }) => {
@@ -76,39 +113,46 @@ const resolvers = {
       return user;
     },
     createProduct: (_, { name, description, price }, context) => {
-      if (!context.userId || !['seller', 'admin'].includes(context.role)) {
-        throw new Error('Only seller or admin accounts can list products');
-      }
+      requireRole(context, ['seller', 'admin']);
       const db = readDb();
-      const product = { id: newId(), name, description, price };
+      const product = { id: newId(), name, description, price, sellerId: context.userId };
       db.products.push(product);
       writeDb(db);
       return product;
     },
     createOrder: (_, { productId, userId, quantity }, context) => {
-      if (!context.userId) {
-        throw new Error('Missing or invalid bearer token');
-      }
-      if (context.role !== 'user') {
-        throw new Error('Only buyer accounts can place orders');
-      }
+      requireRole(context, ['user']);
       const db = readDb();
       const order = { id: newId(), productId, userId, quantity, status: 'Pending' };
       db.orders.push(order);
       writeDb(db);
       return order;
     },
+    respondToOrder: (_, { id, accept }, context) => {
+      requireRole(context, ['seller', 'admin']);
+      const db = readDb();
+      const order = db.orders.find((o) => o.id === id);
+      if (!order) throw new Error('Order not found');
+      if (context.role === 'seller') {
+        const product = db.products.find((p) => p.id === order.productId);
+        if (!product || product.sellerId !== context.userId) {
+          throw new Error('You can only respond to requests for your own products');
+        }
+      }
+      order.status = accept ? 'Accepted' : 'Rejected';
+      writeDb(db);
+      return order;
+    },
     register: async (_, { username, email, password, role }) => {
-      const VALID_ROLES = ['user', 'seller', 'admin'];
-      if (role && !VALID_ROLES.includes(role)) {
-        throw new Error(`role must be one of: ${VALID_ROLES.join(', ')}`);
+      if (role && !PUBLIC_ROLES.includes(role)) {
+        throw new Error(`role must be one of: ${PUBLIC_ROLES.join(', ')}`);
       }
       const db = readDb();
       if (db.accounts?.some((a) => a.email === email)) {
         throw new Error('Email already in use');
       }
       const hashed = await bcrypt.hash(password, 10);
-      const account = { id: newId(), username, email, password: hashed, role: role || 'user' };
+      const account = { id: newId(), username, email, password: hashed, role: role || 'user', active: true };
       db.accounts = db.accounts || [];
       db.accounts.push(account);
       writeDb(db);
@@ -119,6 +163,9 @@ const resolvers = {
       const account = (db.accounts || []).find((a) => a.email === email);
       if (!account || !(await bcrypt.compare(password, account.password))) {
         throw new Error('Invalid credentials');
+      }
+      if (account.active === false) {
+        throw new Error('This account has been disabled');
       }
       const token = jwt.sign(
         { userId: account.id, username: account.username, role: account.role || 'user' },
@@ -133,8 +180,41 @@ const resolvers = {
         role: account.role || 'user',
       };
     },
+    setAccountActive: (_, { userId, active }, context) => {
+      requireRole(context, ['admin']);
+      const db = readDb();
+      const account = db.accounts.find((a) => a.id === userId);
+      if (!account) throw new Error('Account not found');
+      if (account.role === 'admin') throw new Error('Cannot deactivate an admin account');
+      account.active = active;
+      writeDb(db);
+      return accountView(account);
+    },
   },
 };
+
+async function ensureAdminSeeded() {
+  const email = process.env.ADMIN_EMAIL;
+  const password = process.env.ADMIN_PASSWORD;
+  if (!email || !password) {
+    console.warn('ADMIN_EMAIL / ADMIN_PASSWORD not set — no admin account seeded.');
+    return;
+  }
+  const db = readDb();
+  db.accounts = db.accounts || [];
+  if (db.accounts.some((a) => a.email === email)) return;
+  const hashed = await bcrypt.hash(password, 10);
+  db.accounts.push({
+    id: newId(),
+    username: process.env.ADMIN_USERNAME || 'admin',
+    email,
+    password: hashed,
+    role: 'admin',
+    active: true,
+  });
+  writeDb(db);
+  console.log(`Seeded admin account for ${email}`);
+}
 
 const server = new ApolloServer({
   typeDefs,
@@ -154,6 +234,8 @@ const server = new ApolloServer({
 });
 
 const port = process.env.PORT || 4000;
-server.listen({ port }).then(({ url }) => {
-  console.log(`Ecom demo GraphQL gateway ready at ${url}`);
+ensureAdminSeeded().then(() => {
+  server.listen({ port }).then(({ url }) => {
+    console.log(`Ecom demo GraphQL gateway ready at ${url}`);
+  });
 });
