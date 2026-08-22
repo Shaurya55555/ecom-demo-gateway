@@ -1,0 +1,13 @@
+{
+  "name": "ecom-demo-gateway",
+  "version": "1.0.0",
+  "description": "Live single-service demo of the ecom-microservice-graphql GraphQL API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "apollo-server": "^2.25.2",
+    "graphql": "^15.8.0"
+  }
+}
