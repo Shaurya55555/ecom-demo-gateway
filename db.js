@@ -14,6 +14,7 @@ const SEED = {
     { id: 'p3', name: 'USB-C Hub', description: '7-in-1 USB-C hub with HDMI and PD passthrough', price: 34.0 },
   ],
   orders: [],
+  accounts: [],
 };
 
 function readDb() {
