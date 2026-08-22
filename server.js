@@ -1,7 +1,8 @@
 const { ApolloServer, gql } = require('apollo-server');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { readDb, writeDb, newId } = require('./db');
+const mongoose = require('mongoose');
+const { connectDb, Product, Order, Account } = require('./db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'ecom-demo-insecure-dev-secret';
 const PUBLIC_ROLES = ['user', 'seller'];
@@ -79,88 +80,72 @@ function requireRole(context, roles) {
   }
 }
 
-function accountView(a) {
-  return { id: a.id, username: a.username, email: a.email, role: a.role || 'user', active: a.active !== false };
+function isValidId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
 }
 
 const resolvers = {
+  Product: { id: (p) => String(p._id) },
+  Order: { id: (o) => String(o._id) },
+  Account: { id: (a) => String(a._id), active: (a) => a.active !== false },
+
   Query: {
-    getUsers: () => readDb().users,
-    getUser: (_, { id }) => readDb().users.find((u) => u.id === id),
-    getProducts: () => readDb().products,
-    getProduct: (_, { id }) => readDb().products.find((p) => p.id === id),
-    getOrders: () => readDb().orders,
-    getOrder: (_, { id }) => readDb().orders.find((o) => o.id === id),
-    getSellerOrders: (_, __, context) => {
+    getUsers: () => [],
+    getUser: () => null,
+    getProducts: async () => Product.find().exec(),
+    getProduct: async (_, { id }) => (isValidId(id) ? await Product.findById(id).exec() : null),
+    getOrders: async () => Order.find().exec(),
+    getOrder: async (_, { id }) => (isValidId(id) ? await Order.findById(id).exec() : null),
+    getSellerOrders: async (_, __, context) => {
       requireRole(context, ['seller']);
-      const db = readDb();
-      const myProductIds = new Set(
-        db.products.filter((p) => p.sellerId === context.userId).map((p) => p.id)
-      );
-      return db.orders.filter((o) => myProductIds.has(o.productId));
+      const myProducts = await Product.find({ sellerId: context.userId }).select('_id').exec();
+      const myProductIds = myProducts.map((p) => String(p._id));
+      return Order.find({ productId: { $in: myProductIds } }).exec();
     },
-    getAccounts: (_, __, context) => {
+    getAccounts: async (_, __, context) => {
       requireRole(context, ['admin']);
-      return readDb().accounts.map(accountView);
+      return Account.find().exec();
     },
   },
+
   Mutation: {
-    createUser: (_, { name, email }) => {
-      const db = readDb();
-      const user = { id: newId(), name, email };
-      db.users.push(user);
-      writeDb(db);
-      return user;
+    createUser: () => {
+      throw new Error('Not supported in this demo');
     },
     createProduct: (_, { name, description, price }, context) => {
       requireRole(context, ['seller', 'admin']);
-      const db = readDb();
-      const product = { id: newId(), name, description, price, sellerId: context.userId };
-      db.products.push(product);
-      writeDb(db);
-      return product;
+      return Product.create({ name, description, price, sellerId: context.userId });
     },
     createOrder: (_, { productId, userId, quantity }, context) => {
       requireRole(context, ['user']);
-      const db = readDb();
-      const order = { id: newId(), productId, userId, quantity, status: 'Pending' };
-      db.orders.push(order);
-      writeDb(db);
-      return order;
+      return Order.create({ productId, userId, quantity, status: 'Pending' });
     },
-    respondToOrder: (_, { id, accept }, context) => {
+    respondToOrder: async (_, { id, accept }, context) => {
       requireRole(context, ['seller', 'admin']);
-      const db = readDb();
-      const order = db.orders.find((o) => o.id === id);
+      const order = await Order.findById(id);
       if (!order) throw new Error('Order not found');
       if (context.role === 'seller') {
-        const product = db.products.find((p) => p.id === order.productId);
+        const product = await Product.findById(order.productId);
         if (!product || product.sellerId !== context.userId) {
           throw new Error('You can only respond to requests for your own products');
         }
       }
       order.status = accept ? 'Accepted' : 'Rejected';
-      writeDb(db);
+      await order.save();
       return order;
     },
     register: async (_, { username, email, password, role }) => {
       if (role && !PUBLIC_ROLES.includes(role)) {
         throw new Error(`role must be one of: ${PUBLIC_ROLES.join(', ')}`);
       }
-      const db = readDb();
-      if (db.accounts?.some((a) => a.email === email)) {
-        throw new Error('Email already in use');
-      }
+      const existing = await Account.findOne({ email });
+      if (existing) throw new Error('Email already in use');
       const hashed = await bcrypt.hash(password, 10);
-      const account = { id: newId(), username, email, password: hashed, role: role || 'user', active: true };
-      db.accounts = db.accounts || [];
-      db.accounts.push(account);
-      writeDb(db);
-      return { message: 'User registered successfully', userId: account.id };
+      const account = await Account.create({ username, email, password: hashed, role: role || 'user' });
+      return { message: 'User registered successfully', userId: String(account._id) };
     },
     login: async (_, { email, password }) => {
-      const db = readDb();
-      const account = (db.accounts || []).find((a) => a.email === email);
+      const account = await Account.findOne({ email });
       if (!account || !(await bcrypt.compare(password, account.password))) {
         throw new Error('Invalid credentials');
       }
@@ -168,27 +153,26 @@ const resolvers = {
         throw new Error('This account has been disabled');
       }
       const token = jwt.sign(
-        { userId: account.id, username: account.username, role: account.role || 'user' },
+        { userId: String(account._id), username: account.username, role: account.role || 'user' },
         JWT_SECRET,
         { expiresIn: '1h' }
       );
       return {
         token,
-        userId: account.id,
+        userId: String(account._id),
         username: account.username,
         email: account.email,
         role: account.role || 'user',
       };
     },
-    setAccountActive: (_, { userId, active }, context) => {
+    setAccountActive: async (_, { userId, active }, context) => {
       requireRole(context, ['admin']);
-      const db = readDb();
-      const account = db.accounts.find((a) => a.id === userId);
+      const account = await Account.findById(userId);
       if (!account) throw new Error('Account not found');
       if (account.role === 'admin') throw new Error('Cannot deactivate an admin account');
       account.active = active;
-      writeDb(db);
-      return accountView(account);
+      await account.save();
+      return account;
     },
   },
 };
@@ -200,19 +184,16 @@ async function ensureAdminSeeded() {
     console.warn('ADMIN_EMAIL / ADMIN_PASSWORD not set — no admin account seeded.');
     return;
   }
-  const db = readDb();
-  db.accounts = db.accounts || [];
-  if (db.accounts.some((a) => a.email === email)) return;
+  const existing = await Account.findOne({ email });
+  if (existing) return;
   const hashed = await bcrypt.hash(password, 10);
-  db.accounts.push({
-    id: newId(),
+  await Account.create({
     username: process.env.ADMIN_USERNAME || 'admin',
     email,
     password: hashed,
     role: 'admin',
     active: true,
   });
-  writeDb(db);
   console.log(`Seeded admin account for ${email}`);
 }
 
@@ -234,8 +215,13 @@ const server = new ApolloServer({
 });
 
 const port = process.env.PORT || 4000;
-ensureAdminSeeded().then(() => {
-  server.listen({ port }).then(({ url }) => {
+connectDb()
+  .then(ensureAdminSeeded)
+  .then(() => server.listen({ port }))
+  .then(({ url }) => {
     console.log(`Ecom demo GraphQL gateway ready at ${url}`);
+  })
+  .catch((err) => {
+    console.error('Failed to start:', err);
+    process.exit(1);
   });
-});

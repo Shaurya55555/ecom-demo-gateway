@@ -1,37 +1,53 @@
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+const mongoose = require('mongoose');
 
-const DB_PATH = path.join(__dirname, 'data.json');
+const productSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  description: { type: String, required: true },
+  price: { type: Number, required: true },
+  sellerId: { type: String, default: null },
+});
 
-const SEED = {
-  users: [
-    { id: 'u1', name: 'Demo Shopper', email: 'demo@ecom.dev' },
-  ],
-  products: [
-    { id: 'p1', name: 'Wireless Mouse', description: 'Ergonomic 2.4GHz wireless mouse', price: 19.99, sellerId: null },
-    { id: 'p2', name: 'Mechanical Keyboard', description: 'Hot-swappable 75% mechanical keyboard', price: 89.5, sellerId: null },
-    { id: 'p3', name: 'USB-C Hub', description: '7-in-1 USB-C hub with HDMI and PD passthrough', price: 34.0, sellerId: null },
-  ],
-  orders: [],
-  accounts: [],
-};
+const orderSchema = new mongoose.Schema(
+  {
+    productId: { type: String, required: true },
+    userId: { type: String, required: true },
+    quantity: { type: Number, required: true },
+    status: { type: String, enum: ['Pending', 'Accepted', 'Rejected'], default: 'Pending' },
+  },
+  { timestamps: true }
+);
 
-function readDb() {
-  if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify(SEED, null, 2));
+const accountSchema = new mongoose.Schema({
+  username: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, enum: ['user', 'seller', 'admin'], default: 'user' },
+  active: { type: Boolean, default: true },
+});
+
+const Product = mongoose.model('Product', productSchema);
+const Order = mongoose.model('Order', orderSchema);
+const Account = mongoose.model('Account', accountSchema);
+
+const SEED_PRODUCTS = [
+  { name: 'Wireless Mouse', description: 'Ergonomic 2.4GHz wireless mouse', price: 19.99, sellerId: null },
+  { name: 'Mechanical Keyboard', description: 'Hot-swappable 75% mechanical keyboard', price: 89.5, sellerId: null },
+  { name: 'USB-C Hub', description: '7-in-1 USB-C hub with HDMI and PD passthrough', price: 34.0, sellerId: null },
+];
+
+async function connectDb() {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) {
+    throw new Error('MONGODB_URI is not set');
   }
-  const raw = fs.readFileSync(DB_PATH, 'utf-8').trim();
-  if (!raw) return JSON.parse(JSON.stringify(SEED));
-  return JSON.parse(raw);
+  await mongoose.connect(uri);
+  console.log('Connected to MongoDB');
+
+  const productCount = await Product.countDocuments();
+  if (productCount === 0) {
+    await Product.insertMany(SEED_PRODUCTS);
+    console.log('Seeded initial products');
+  }
 }
 
-function writeDb(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
-}
-
-function newId() {
-  return crypto.randomBytes(4).toString('hex');
-}
-
-module.exports = { readDb, writeDb, newId };
+module.exports = { connectDb, Product, Order, Account };
