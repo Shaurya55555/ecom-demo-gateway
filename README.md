@@ -26,6 +26,13 @@ Deployed on Render's free tier — the first request after idling can take
 ~30s to wake up, but data now persists in MongoDB (a free Atlas cluster)
 rather than resetting on every restart.
 
+## Product fields and management
+
+Products carry optional `category` (defaults to `General`) and `imageUrl`, plus a `createdAt`
+timestamp (derived from the ObjectId for products created before timestamps existed).
+`updateProduct` and `deleteProduct` are limited to the owning seller or an admin. The original
+seed products are categorised on startup (idempotent).
+
 ## Environment variables
 
 - `MONGODB_URI` — MongoDB connection string (e.g. a free MongoDB Atlas

@@ -20,6 +20,9 @@ const typeDefs = gql`
     description: String!
     price: Float!
     sellerId: ID
+    category: String
+    imageUrl: String
+    createdAt: String
   }
 
   type Order {
@@ -64,7 +67,22 @@ const typeDefs = gql`
 
   type Mutation {
     createUser(name: String!, email: String!): User
-    createProduct(name: String!, description: String!, price: Float!): Product
+    createProduct(
+      name: String!
+      description: String!
+      price: Float!
+      category: String
+      imageUrl: String
+    ): Product
+    updateProduct(
+      id: ID!
+      name: String
+      description: String
+      price: Float
+      category: String
+      imageUrl: String
+    ): Product
+    deleteProduct(id: ID!): Product
     createOrder(productId: ID!, userId: ID!, quantity: Int!): Order
     respondToOrder(id: ID!, accept: Boolean!): Order
     register(username: String!, email: String!, password: String!, role: String): RegisterResult
@@ -85,7 +103,11 @@ function isValidId(id) {
 }
 
 const resolvers = {
-  Product: { id: (p) => String(p._id) },
+  Product: {
+    id: (p) => String(p._id),
+    // Products created before timestamps existed fall back to the time embedded in their ObjectId.
+    createdAt: (p) => (p.createdAt || p._id.getTimestamp()).toISOString(),
+  },
   Order: { id: (o) => String(o._id) },
   Account: { id: (a) => String(a._id), active: (a) => a.active !== false },
 
@@ -112,9 +134,41 @@ const resolvers = {
     createUser: () => {
       throw new Error('Not supported in this demo');
     },
-    createProduct: (_, { name, description, price }, context) => {
+    createProduct: (_, { name, description, price, category, imageUrl }, context) => {
       requireRole(context, ['seller', 'admin']);
-      return Product.create({ name, description, price, sellerId: context.userId });
+      return Product.create({
+        name,
+        description,
+        price,
+        ...(category ? { category } : {}),
+        ...(imageUrl ? { imageUrl } : {}),
+        sellerId: context.userId,
+      });
+    },
+    updateProduct: async (_, { id, ...fields }, context) => {
+      requireRole(context, ['seller', 'admin']);
+      if (!isValidId(id)) throw new Error('Product not found');
+      const product = await Product.findById(id);
+      if (!product) throw new Error('Product not found');
+      if (context.role !== 'admin' && product.sellerId !== context.userId) {
+        throw new Error('You can only edit your own products');
+      }
+      for (const key of ['name', 'description', 'price', 'category', 'imageUrl']) {
+        if (fields[key] !== undefined && fields[key] !== null) product[key] = fields[key];
+      }
+      await product.save();
+      return product;
+    },
+    deleteProduct: async (_, { id }, context) => {
+      requireRole(context, ['seller', 'admin']);
+      if (!isValidId(id)) throw new Error('Product not found');
+      const product = await Product.findById(id);
+      if (!product) throw new Error('Product not found');
+      if (context.role !== 'admin' && product.sellerId !== context.userId) {
+        throw new Error('You can only delete your own products');
+      }
+      await product.deleteOne();
+      return product;
     },
     createOrder: (_, { productId, userId, quantity }, context) => {
       requireRole(context, ['user']);

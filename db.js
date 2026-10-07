@@ -1,11 +1,16 @@
 const mongoose = require('mongoose');
 
-const productSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  description: { type: String, required: true },
-  price: { type: Number, required: true },
-  sellerId: { type: String, default: null },
-});
+const productSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true },
+    description: { type: String, required: true },
+    price: { type: Number, required: true },
+    sellerId: { type: String, default: null },
+    category: { type: String, default: 'General', trim: true },
+    imageUrl: { type: String, default: '', trim: true },
+  },
+  { timestamps: true }
+);
 
 const orderSchema = new mongoose.Schema(
   {
@@ -30,9 +35,9 @@ const Order = mongoose.model('Order', orderSchema);
 const Account = mongoose.model('Account', accountSchema);
 
 const SEED_PRODUCTS = [
-  { name: 'Wireless Mouse', description: 'Ergonomic 2.4GHz wireless mouse', price: 19.99, sellerId: null },
-  { name: 'Mechanical Keyboard', description: 'Hot-swappable 75% mechanical keyboard', price: 89.5, sellerId: null },
-  { name: 'USB-C Hub', description: '7-in-1 USB-C hub with HDMI and PD passthrough', price: 34.0, sellerId: null },
+  { name: 'Wireless Mouse', description: 'Ergonomic 2.4GHz wireless mouse', price: 19.99, sellerId: null, category: 'Electronics' },
+  { name: 'Mechanical Keyboard', description: 'Hot-swappable 75% mechanical keyboard', price: 89.5, sellerId: null, category: 'Electronics' },
+  { name: 'USB-C Hub', description: '7-in-1 USB-C hub with HDMI and PD passthrough', price: 34.0, sellerId: null, category: 'Electronics' },
 ];
 
 async function connectDb() {
@@ -47,6 +52,14 @@ async function connectDb() {
   if (productCount === 0) {
     await Product.insertMany(SEED_PRODUCTS);
     console.log('Seeded initial products');
+  } else {
+    // One-time, idempotent: categorise the original seed products that predate the category field.
+    const names = SEED_PRODUCTS.map((p) => p.name);
+    const res = await Product.updateMany(
+      { name: { $in: names }, sellerId: null, category: { $exists: false } },
+      { $set: { category: 'Electronics' } }
+    );
+    if (res.modifiedCount) console.log(`Categorised ${res.modifiedCount} seed products`);
   }
 }
 
